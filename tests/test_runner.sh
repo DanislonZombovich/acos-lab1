@@ -4,16 +4,35 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEST_DIR="$SCRIPT_DIR/test_env"
 CLEANUP_SH="$SCRIPT_DIR/../src/cleanup.sh"
 
+if [ -z "$LAB1_IN_NS" ]; then
+    if ! unshare -rm true 2>/dev/null; then
+        echo "Ошибка: не удалось создать user namespace (unshare -rm)." >&2
+        echo "Нужен Linux с включёнными unprivileged user namespaces." >&2
+        exit 1
+    fi
+    export LAB1_IN_NS=1
+    exec unshare -rm "$0" "$@"
+fi
+
+
+cleanup() {
+    umount "$TEST_DIR/log" 2>/dev/null
+    rm -rf "$TEST_DIR"
+}
+trap cleanup EXIT
 
 fail() {
     echo "Ошибка: $1" >&2
-    rm -rf "$TEST_DIR"
     exit 1
 }
 
+
 prepare_env() {
-    rm -rf "$TEST_DIR"
+    cleanup
     mkdir -p "$TEST_DIR/log" "$TEST_DIR/backup"
+    mount -t tmpfs -o size="$1"m tmpfs "$TEST_DIR/log" \
+        || fail "не удалось смонтировать виртуальный диск"
+    echo "Создан виртуальный диск на $1 MB, смонтирован в log/"
 }
 
 make_file() {
@@ -25,77 +44,71 @@ count_backups() {
     ls "$TEST_DIR/backup" | wc -l | tr -d ' '
 }
 
-
 echo "=========================================="
 echo "Запуск теста 1: Заполнение ниже порога"
 echo "=========================================="
-prepare_env
+prepare_env 1200
 make_file file1.log 200 202001010000
 make_file file2.log 200 202001020000
 make_file file3.log 200 202001030000
 echo "Создано файлов на 600 MB (требование >= 0.5 GB соблюдено)"
 
-"$CLEANUP_SH" "$TEST_DIR/log" 70 "$TEST_DIR/backup" 1200
+"$CLEANUP_SH" "$TEST_DIR/log" 70 "$TEST_DIR/backup" || fail "cleanup.sh завершился с ошибкой"
 
-[ "$(count_backups)" -eq 0 ]       || fail "архив не должен был создаваться!"
-[ -f "$TEST_DIR/log/file1.log" ]   || fail "файлы не должны были удаляться!"
+[ "$(count_backups)" -eq 0 ]     || fail "архив не должен был создаваться!"
+[ -f "$TEST_DIR/log/file1.log" ] || fail "файлы не должны были удаляться!"
 echo "Тест 1 успешно пройден!"
-
 
 echo "=========================================="
 echo "Запуск теста 2: Заполнение выше порога (tar.gz)"
 echo "=========================================="
-prepare_env
+prepare_env 1000
 make_file app_old.log  180 202001010000
 make_file app_mid1.log 120 202001020000
 make_file app_mid2.log 250 202001030000
 make_file app_new.log  300 202001040000
 echo "Создано файлов на 850 MB (требование >= 0.5 GB соблюдено)"
 
-"$CLEANUP_SH" "$TEST_DIR/log" 70 "$TEST_DIR/backup" 1000
+"$CLEANUP_SH" "$TEST_DIR/log" 70 "$TEST_DIR/backup" || fail "cleanup.sh завершился с ошибкой"
 
-[ ! -f "$TEST_DIR/log/app_old.log" ]  || fail "старый файл не был удален!"
-[ -f "$TEST_DIR/log/app_mid1.log" ]   || fail "свежие файлы были ошибочно удалены!"
+[ ! -f "$TEST_DIR/log/app_old.log" ] || fail "старый файл не был удален!"
+[ -f "$TEST_DIR/log/app_mid1.log" ]  || fail "свежие файлы были ошибочно удалены!"
 ls "$TEST_DIR"/backup/*.tar.gz >/dev/null 2>&1 || fail "архив tar.gz не найден!"
 tar -tzf "$TEST_DIR"/backup/*.tar.gz | grep -q "app_old.log" \
-                                      || fail "app_old.log отсутствует в архиве!"
+                                     || fail "app_old.log отсутствует в архиве!"
 echo "Тест 2 успешно пройден!"
-
 
 echo "=========================================="
 echo "Запуск теста 3: Удаление нескольких файлов по возрасту"
 echo "=========================================="
-prepare_env
+prepare_env 1000
 make_file log_1.log 150 202001010000
 make_file log_2.log 200 202001020000
 make_file log_3.log 250 202001030000
 make_file log_4.log 300 202001040000
 echo "Создано файлов на 900 MB (требование >= 0.5 GB соблюдено)"
 
-"$CLEANUP_SH" "$TEST_DIR/log" 60 "$TEST_DIR/backup" 1000
+"$CLEANUP_SH" "$TEST_DIR/log" 60 "$TEST_DIR/backup" || fail "cleanup.sh завершился с ошибкой"
 
 [ ! -f "$TEST_DIR/log/log_1.log" ] || fail "log_1.log не удален!"
 [ ! -f "$TEST_DIR/log/log_2.log" ] || fail "log_2.log не удален!"
 [ -f "$TEST_DIR/log/log_3.log" ]   || fail "log_3.log был ошибочно удален!"
 echo "Тест 3 успешно пройден!"
 
-
 echo "=========================================="
-echo "Запуск теста 4 (на 9-10 баллов): LZMA сжатие"
+echo "Запуск теста 4: LZMA сжатие"
 echo "=========================================="
-prepare_env
+prepare_env 1000
 make_file data_old.log 200 202001010000
 make_file data_new.log 600 202001020000
 echo "Создано файлов на 800 MB (требование >= 0.5 GB соблюдено)"
 
-LAB1_MAX_COMPRESSION=1 "$CLEANUP_SH" "$TEST_DIR/log" 70 "$TEST_DIR/backup" 1000
+LAB1_MAX_COMPRESSION=1 "$CLEANUP_SH" "$TEST_DIR/log" 70 "$TEST_DIR/backup" \
+    || fail "cleanup.sh завершился с ошибкой"
 
 ls "$TEST_DIR"/backup/*.tar.lzma >/dev/null 2>&1 || fail "архив tar.lzma не найден!"
 [ ! -f "$TEST_DIR/log/data_old.log" ]            || fail "старый файл не удален!"
 echo "Тест 4 успешно пройден!"
-
-
-rm -rf "$TEST_DIR"
 
 echo "=========================================="
 echo "Все тесты успешно пройдены!"

@@ -5,18 +5,13 @@ set -e
 LOG_DIR="${1:-./log}"
 THRESHOLD="${2:-70}"
 BACKUP_DIR="${3:-./backup}"
-TOTAL_MB="${4:-${LOG_MAX_SIZE_MB:-}}"
 
 if [ ! -d "$LOG_DIR" ]; then
     echo "Ошибка: директория '$LOG_DIR' не найдена." >&2
     exit 1
 fi
 
-if [ -z "$TOTAL_MB" ]; then
-    TOTAL_KB=$(df -k "$LOG_DIR" | awk 'NR==2 {print $2}')
-else
-    TOTAL_KB=$((TOTAL_MB * 1024))
-fi
+TOTAL_KB=$(df -kP "$LOG_DIR" | awk 'NR==2 {print $2}')
 
 CURRENT_KB=$(du -sk "$LOG_DIR" | awk '{print $1}')
 PERCENT=$((CURRENT_KB * 100 / TOTAL_KB))
